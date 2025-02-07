@@ -4,6 +4,7 @@ import { User, CircleUser, Building2, LogOut, CheckCircle2 } from 'lucide-react'
 import { supabase } from '../lib/supabase';
 import { useAuth } from '../contexts/AuthContext';
 import type { Organization, UserDetails } from '../types/database';
+import Header from '../components/Header';
 
 interface UserOrganization {
   organization: Organization;
@@ -78,16 +79,6 @@ export default function Profile() {
     fetchProfileData();
   }, [user, navigate]);
 
-  const handleSignOut = async () => {
-    try {
-      const { error } = await supabase.auth.signOut();
-      if (error) throw error;
-      navigate('/signin');
-    } catch (error) {
-      console.error('Error signing out:', error);
-    }
-  };
-
   const handleSwitchOrganization = async (organizationId: string) => {
     try {
       if (!user) return;
@@ -108,33 +99,28 @@ export default function Profile() {
 
   if (loading) {
     return (
-      <div className="min-h-screen bg-gray-50 flex items-center justify-center">
-        <div className="text-gray-500">Loading...</div>
+      <div className="min-h-screen bg-gray-50">
+        <Header />
+        <div className="flex items-center justify-center h-[calc(100vh-64px)]">
+          <div className="text-gray-500">Loading...</div>
+        </div>
       </div>
     );
   }
 
   return (
     <div className="min-h-screen bg-gray-50">
+      <Header />
       <div className="max-w-7xl mx-auto py-12 px-4 sm:px-6 lg:px-8">
         <div className="max-w-3xl mx-auto space-y-8">
           {/* Profile Information */}
           <div className="bg-white shadow overflow-hidden sm:rounded-lg">
             <div className="px-4 py-5 sm:px-6">
-              <div className="flex items-center justify-between">
-                <div className="flex items-center">
-                  <CircleUser className="h-8 w-8 text-gray-400" />
-                  <h3 className="ml-3 text-lg leading-6 font-medium text-gray-900">
-                    Profile Information
-                  </h3>
-                </div>
-                <button
-                  onClick={handleSignOut}
-                  className="inline-flex items-center px-4 py-2 border border-transparent text-sm font-medium rounded-md text-white bg-red-600 hover:bg-red-700 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-red-500"
-                >
-                  <LogOut className="h-4 w-4 mr-2" />
-                  Sign Out
-                </button>
+              <div className="flex items-center">
+                <CircleUser className="h-8 w-8 text-gray-400" />
+                <h3 className="ml-3 text-lg leading-6 font-medium text-gray-900">
+                  Profile Information
+                </h3>
               </div>
             </div>
             <div className="border-t border-gray-200 px-4 py-5 sm:px-6">

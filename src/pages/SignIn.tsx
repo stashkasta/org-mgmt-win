@@ -3,7 +3,7 @@ import { useForm } from 'react-hook-form';
 import { Link, useNavigate } from 'react-router-dom';
 import { AlertCircle, Building2, ChevronDown } from 'lucide-react';
 import { supabase } from '../lib/supabase';
-import type { Organization } from '../types/database';
+import type { Organization, SubscriptionPlan } from '../types/database';
 
 interface SignInFormData {
   email: string;
@@ -14,9 +14,14 @@ interface OrganizationSelectionData {
   organizationId: string;
 }
 
+interface OrganizationWithPlan extends Organization {
+  subscription_plans: SubscriptionPlan;
+  member_count: number;
+}
+
 export default function SignIn() {
   const [error, setError] = useState<string>('');
-  const [organizations, setOrganizations] = useState<Organization[]>([]);
+  const [organizations, setOrganizations] = useState<OrganizationWithPlan[]>([]);
   const [isAuthenticated, setIsAuthenticated] = useState(false);
   const [selectedOrgId, setSelectedOrgId] = useState<string>('');
   const [loading, setLoading] = useState(false);
@@ -33,7 +38,7 @@ export default function SignIn() {
       await supabase.auth.signOut();
       
       // Then attempt to sign in
-      const { error: signInError } = await supabase.auth.signInWithPassword({
+      const { data: authData, error: signInError } = await supabase.auth.signInWithPassword({
         email: data.email,
         password: data.password,
       });
@@ -45,33 +50,43 @@ export default function SignIn() {
         throw signInError;
       }
 
-      // Get user organizations
+      if (!authData.user) {
+        throw new Error('No user data returned after sign in');
+      }
+
+      // Fetch user's organizations with subscription plans and member count
       const { data: userOrgs, error: orgsError } = await supabase
         .from('user_organizations')
         .select(`
           organization:organizations (
             id,
             name,
-            registration_number,
-            tax_number,
-            address,
-            phone
+            subscription_plans (*),
+            member_count:user_organizations(count)
           )
         `)
+        .eq('user_id', authData.user.id)
         .order('created_at');
 
       if (orgsError) throw orgsError;
 
       const userOrganizations = userOrgs
-        .map(org => org.organization)
-        .filter((org): org is Organization => org !== null);
+        .map(org => {
+          if (!org.organization || !org.organization.subscription_plans) return null;
+          return {
+            ...org.organization,
+            member_count: org.organization.member_count[0].count,
+            subscription_plans: org.organization.subscription_plans
+          };
+        })
+        .filter((org): org is OrganizationWithPlan => org !== null);
 
       if (userOrganizations.length === 0) {
         throw new Error('You are not a member of any organization');
       }
 
       setOrganizations(userOrganizations);
-      setSelectedOrgId(userOrganizations[0].id); // Select first organization by default
+      setSelectedOrgId(userOrganizations[0].id);
       setIsAuthenticated(true);
 
     } catch (err) {
@@ -105,7 +120,7 @@ export default function SignIn() {
 
       if (updateError) throw updateError;
 
-      navigate('/profile');
+      navigate('/');
 
     } catch (err) {
       console.error('Organization selection error:', err);
@@ -192,12 +207,11 @@ export default function SignIn() {
                   <select
                     value={selectedOrgId}
                     onChange={(e) => setSelectedOrgId(e.target.value)}
-                    className="block w-full pl-3 pr-10 py-2 text-base border-gray-300 focus:outline-none focus:ring-indigo-500 focus:border-indigo-500 sm:text-sm rounded-md appearance-none"
+                    className="block w-full pl-3 pr-10 py-2 text-base border border-gray-300 focus:outline-none focus:ring-indigo-500 focus:border-indigo-500 sm:text-sm rounded-md appearance-none"
                   >
-                    <option value="">Select an organization</option>
                     {organizations.map((org) => (
-                      <option key={org.id} value={org.id}>
-                        {org.name} - Reg: {org.registration_number}
+                      <option key={`org-${org.id}`} value={org.id}>
+                        {org.name} - {org.member_count}/{org.subscription_plans.max_users} members
                       </option>
                     ))}
                   </select>

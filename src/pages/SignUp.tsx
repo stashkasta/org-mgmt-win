@@ -1,9 +1,9 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import { useForm } from 'react-hook-form';
 import { Link, useNavigate } from 'react-router-dom';
 import { Building2, UserPlus, AlertCircle, LogIn, ChevronDown } from 'lucide-react';
 import { supabase } from '../lib/supabase';
-import type { Organization } from '../types/database';
+import type { Organization, SubscriptionPlan } from '../types/database';
 
 type SignUpMode = 'organization' | 'member';
 type JoinMode = 'new' | 'existing';
@@ -17,6 +17,7 @@ interface OrganizationFormData {
   email: string;
   fullName: string;
   password: string;
+  subscriptionPlanId: string;
 }
 
 interface MemberFormData {
@@ -26,15 +27,87 @@ interface MemberFormData {
   organizationId?: string;
 }
 
+interface OrganizationWithPlan extends Organization {
+  subscription_plans: SubscriptionPlan;
+  member_count: number;
+}
+
 export default function SignUp() {
   const [mode, setMode] = useState<SignUpMode>('organization');
   const [joinMode, setJoinMode] = useState<JoinMode>('new');
   const [error, setError] = useState<string>('');
-  const [organizations, setOrganizations] = useState<Organization[]>([]);
+  const [organizations, setOrganizations] = useState<OrganizationWithPlan[]>([]);
+  const [subscriptionPlans, setSubscriptionPlans] = useState<SubscriptionPlan[]>([]);
   const [selectedOrgId, setSelectedOrgId] = useState<string>('');
   const [loading, setLoading] = useState(false);
   const { register, handleSubmit, reset, formState: { errors } } = useForm<OrganizationFormData | MemberFormData>();
   const navigate = useNavigate();
+
+  useEffect(() => {
+    const fetchSubscriptionPlans = async () => {
+      try {
+        const { data: plans, error: plansError } = await supabase
+          .from('subscription_plans')
+          .select('*')
+          .order('price');
+
+        if (plansError) throw plansError;
+        setSubscriptionPlans(plans);
+      } catch (err) {
+        console.error('Error fetching subscription plans:', err);
+        setError('Failed to load subscription plans');
+      }
+    };
+
+    if (mode === 'organization') {
+      fetchSubscriptionPlans();
+    }
+  }, [mode]);
+
+  const fetchOrganizations = async () => {
+    setLoading(true);
+    try {
+      // Fetch organizations with their subscription plans and member count
+      const { data, error: fetchError } = await supabase
+        .from('organizations')
+        .select(`
+          *,
+          subscription_plans (*),
+          member_count:user_organizations(count)
+        `)
+        .eq('is_default', false)
+        .order('name');
+
+      if (fetchError) throw fetchError;
+
+      if (data && data.length > 0) {
+        // Transform the data to include member count
+        const orgsWithMemberCount = data.map(org => ({
+          ...org,
+          member_count: org.member_count[0].count
+        }));
+
+        // Filter out organizations that have reached their member limit
+        const availableOrgs = orgsWithMemberCount.filter(org => 
+          org.member_count < org.subscription_plans.max_users
+        );
+
+        if (availableOrgs.length === 0) {
+          setError('No organizations are currently accepting new members');
+        } else {
+          setOrganizations(availableOrgs);
+          setSelectedOrgId(availableOrgs[0].id);
+        }
+      } else {
+        setError('No organizations available for joining');
+      }
+    } catch (err) {
+      console.error('Error fetching organizations:', err);
+      setError('Failed to load organizations. Please try again later.');
+    } finally {
+      setLoading(false);
+    }
+  };
 
   const handleModeChange = async (newMode: SignUpMode) => {
     setMode(newMode);
@@ -44,28 +117,7 @@ export default function SignUp() {
     setOrganizations([]);
 
     if (newMode === 'member') {
-      setLoading(true);
-      try {
-        const { data, error: fetchError } = await supabase
-          .from('organizations')
-          .select('*')
-          .eq('is_default', false)
-          .order('name');
-
-        if (fetchError) throw fetchError;
-
-        if (data && data.length > 0) {
-          setOrganizations(data);
-          setSelectedOrgId(data[0].id);
-        } else {
-          setError('No organizations available for joining');
-        }
-      } catch (err) {
-        console.error('Error fetching organizations:', err);
-        setError('Failed to load organizations. Please try again later.');
-      } finally {
-        setLoading(false);
-      }
+      await fetchOrganizations();
     }
   };
 
@@ -87,6 +139,10 @@ export default function SignUp() {
 
       if (mode === 'organization') {
         const orgData = data as OrganizationFormData;
+
+        if (!orgData.subscriptionPlanId) {
+          throw new Error('Please select a subscription plan');
+        }
 
         // Check if organization exists
         const { data: existingOrgs, error: checkError } = await supabase
@@ -141,7 +197,7 @@ export default function SignUp() {
           }
         }
 
-        // Create organization
+        // Create organization with subscription plan
         const { data: newOrg, error: orgError } = await supabase
           .from('organizations')
           .insert([{
@@ -150,6 +206,7 @@ export default function SignUp() {
             tax_number: orgData.taxNumber,
             address: orgData.address || null,
             phone: orgData.phone || null,
+            subscription_plan_id: orgData.subscriptionPlanId,
             is_default: false
           }])
           .select()
@@ -190,6 +247,16 @@ export default function SignUp() {
 
       } else {
         const memberData = data as MemberFormData;
+
+        // Check member limit before proceeding
+        const selectedOrg = organizations.find(org => org.id === selectedOrgId);
+        if (!selectedOrg) {
+          throw new Error('Selected organization not found');
+        }
+
+        if (selectedOrg.member_count >= selectedOrg.subscription_plans.max_users) {
+          throw new Error(`${selectedOrg.name} has reached its maximum member limit of ${selectedOrg.subscription_plans.max_users} users`);
+        }
         
         if (joinMode === 'new') {
           const { data: authData, error: authError } = await supabase.auth.signUp({
@@ -421,7 +488,7 @@ export default function SignUp() {
                       <option value="">Select an organization</option>
                       {organizations.map((org) => (
                         <option key={org.id} value={org.id}>
-                          {org.name} - Reg: {org.registration_number}
+                          {org.name} - {org.member_count}/{org.subscription_plans.max_users} members
                         </option>
                       ))}
                     </select>
@@ -488,6 +555,39 @@ export default function SignUp() {
                     />
                     {errors.taxNumber && (
                       <p className="mt-1 text-sm text-red-600">{errors.taxNumber.message}</p>
+                    )}
+                  </div>
+
+                  <div>
+                    <label className="block text-sm font-medium text-gray-700">
+                      Subscription Plan <span className="text-red-500">*</span>
+                    </label>
+                    <div className="relative mt-1">
+                      <select
+                        {...register('subscriptionPlanId', {
+                          required: 'Please select a subscription plan'
+                        })}
+                        className={`block w-full pl-3 pr-10 py-2 text-base border ${
+                          errors.subscriptionPlanId ? 'border-red-500' : 'border-gray-300'
+                        } focus:outline-none focus:ring-indigo-500 focus:border-indigo-500 sm:text-sm rounded-md appearance-none`}
+                      >
+                        <option value="">Select a subscription plan</option>
+                        {subscriptionPlans.map((plan) => (
+                          <option key={plan.id} value={plan.id}>
+                            {plan.name} - {new Intl.NumberFormat('en-US', {
+                              style: 'currency',
+                              currency: plan.currency,
+                              minimumFractionDigits: 0
+                            }).format(plan.price / 100)}/mo - Up to {plan.max_users} users
+                          </option>
+                        ))}
+                      </select>
+                      <div className="pointer-events-none absolute inset-y-0 right-0 flex items-center px-2 text-gray-700">
+                        <ChevronDown className="h-4 w-4" />
+                      </div>
+                    </div>
+                    {errors.subscriptionPlanId && (
+                      <p className="mt-1 text-sm text-red-600">{errors.subscriptionPlanId.message}</p>
                     )}
                   </div>
 
